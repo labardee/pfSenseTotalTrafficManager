@@ -1,0 +1,174 @@
+/*
+ * Total Traffic Manager
+ *
+ * Copyright 2018 Ansen Labardee
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ *
+ *
+ *
+ *
+ *
+ * You will need to install and configure the "Traffic Totals" package to use this script.
+ *
+ * This tool is meant to monitor the total traffic used on a WAN interface and 
+ * prevent traffic from exceeding a given threshold. It will also send an email when the limit
+ * has been reached.
+ *
+ * This is accomplished using vnstat to get the current months traffic totals.
+ *
+ * If the total is exceeded a firewall rule will be activated and an email will be sent.
+ * If the total has not been exceeded we will ensure that the rule is not enabled.
+ *
+ * This script is intended to be executed by the built in pfsense shell scripting
+ * interface and should be stored at /etc/phpshellsessions/totaltrafficmanager
+ * 
+ * The syntax for this script is:
+ * totaltrafficmanager "Real Interface" "Threshold in GB" "Rule Search String" 'd' for debug (optional)"
+ *
+ * An Example would be: pfSsh.php playback totaltrafficmanager em0 900 ttm2018
+ * An Example with debug would be: pfSsh.php playback totaltrafficmanager em0 900 ttm2018 d
+ *
+ * A cron job probably should not include the debug flag, and it should use the full path 
+ * ie; "/usr/local/sbin/pfSsh.php playback totaltrafficmanager em0 900 ttm2018"
+ *
+ * You should build a firewall rule that reflects your needs and enter a unique string 
+ * (no spaces in the string) in the description of the rule.
+ * You need to provide the same unique string to the script as the "Rule Search String" 
+ * This will allow the script to find the firewall rule to disable by searching for the string.
+ * 
+ * For now the script is designed to only interact with a single rule.
+ * It could be and may soon be modified to interact with all rules that match the search string.
+ *
+ *
+ */
+
+
+require_once("config.inc");
+require_once("functions.inc");
+require_once("filter.inc");
+require_once("shaper.inc");
+
+
+global $config, $argv, $threshold;
+
+// Get Interface, Threshold, Rule Array Number and debug flag from Command Argument and assign to variables here
+$args = array_slice($argv, 3);
+$realwaninterface = "$argv[3]";
+$threshold = "$argv[4]";
+$rulesearchstring = "$argv[5]";
+$debugenable = "$argv[6]";
+
+
+// Crude check of command arguments
+if (empty($rulesearchstring) or ($rulesearchstring === d)) {
+	exit("  ERROR: Either no search string was provided, you provided d as a search string or you don't have enough arguments.\n  Please make sure you have defined all 3 args; The Interface, Threshold and Search String.\n  Like this: pfSsh.php playback totaltrafficmanager em0 900 ttm2018 d\n");
+}
+
+// Make sure that loaded config is updated
+$config = parse_config(true);
+
+// Get the rule array number using the search string
+	foreach ($config['filter']['rule'] as $key => $rule) {
+	$rulestring = $rule['descr'];
+	if (isset($rulestring) && (strpos($rulestring, "$rulesearchstring") !== false)) {
+		$rulenumber = $key;
+	}
+}
+
+
+// Get current monthly total from vnstat, reformat from bytes to GB
+// $interfacedata = shell_exec("vnstat -m -i $realwaninterface -s --xml");
+// $xml=simplexml_load_string($interfacedata) or die("Error: Cannot create object");
+// $rxbytes = $xml->interface[0]->traffic[0]->months[0]->rx;
+// $txbytes = $xml->interface[0]->traffic[0]->months[0]->tx;
+// $rxgb = round(($rxbytes / 1048576), 2);
+// $txgb = round(($txbytes / 1048576), 2);
+// $vnstattotalgb = ($txgb + $rxgb);
+
+
+
+$curl = curl_init("192.168.1.68/COMCASTUSAGE.HTML");
+        curl_setopt($curl, CURLOPT_HEADER, 0);
+        curl_setopt($curl, CURLOPT_POST, 1);
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+		curl_setopt($curl, CURLOPT_CONNECTTIMEOUT ,5);
+		curl_setopt($curl, CURLOPT_TIMEOUT, 10);
+        $curl_output = curl_exec($curl);       
+        curl_close($curl);
+$totalgb = intval($curl_output);
+
+
+
+// Debug Information
+if ($debugenable === d){
+	echo("DEBUG*** Rule Search String $rulesearchstring will be used to find the rule number.\n");
+	echo("DEBUG*** Rule Array Number $rulenumber will be triggered if threshold exceeded.\n");
+	echo("DEBUG*** Pulling total traffic usage for Comcast From Comcast API\n");
+//	echo("DEBUG*** VNSTAT Reports Monthly total as $vnstattotalgb\n");
+	echo("DEBUG*** According to Comcast $totalgb GB Total traffic on interface $realwaninterface for this month.\n");
+	echo("DEBUG*** Threshold set to $threshold GB\n");
+}
+
+
+// Determine if the threshold has been met or Exceeded
+if ($totalgb >= $threshold){
+	if ($debugenable === d){
+	echo("DEBUG*** Threshold has been exceeded safety net is being deployed \n");
+	}
+	if (!isset($config['filter']['rule'][$rulenumber]['disabled'])) {
+		if ($debugenable === d){
+		echo("DEBUG*** Very well, safety net is already active; Rule $rulenumber is enabled. \n");
+		}
+		return 0;
+	} else {
+		unset($config['filter']['rule'][$rulenumber]['disabled']);
+		if ($debugenable === d){
+		echo("DEBUG*** Safety net has been deployed! Rule $rulenumber is now active\n");
+		}
+		write_config("totaltrafficmanager Enabled Rule $rulenumber as as total traffic of $totalgb GB on $realwaninterface exceeded given threshold of $threshold");
+		$config = parse_config(true);
+		filter_configure_sync();
+			notify_via_smtp(sprintf(gettext("Traffic this month: $totalgb GB exceeds the threshold of $threshold GB.\n Rule $rulenumber has been activated and heavy hitters are now using the slow link.\n%s"), $name, $report), true);
+	}
+}
+
+
+// Determine if the threshold has not been met
+if ($totalgb < $threshold) {
+	if ($debugenable === d){
+	echo("DEBUG*** Threshold has not been exceeded, ensuring Rule $rulenumber is disabled \n");
+	}
+	if (isset($config['filter']['rule'][$rulenumber]['disabled'])) {
+		if ($debugenable === d){
+		echo("DEBUG*** Move along, nothing to see here; Rule $rulenumber is already disabled \n");
+		}
+		return 0;
+	} else {
+		$config['filter']['rule'][$rulenumber]['disabled'] = "";
+		write_config("totaltrafficmanager Disabled Rule $rulenumber as total traffic of $totalgb GB on $realwaninterface has not exceeded given threshold of $threshold GB");
+		$config = parse_config(true);
+		filter_configure_sync();
+		if ($debugenable === d){
+		echo("DEBUG*** FULL SPEED AHEAD CAPTAIN! Rule $rulenumber has been disabled \n");
+		}
+		notify_via_smtp(sprintf(gettext("Traffic this month: $totalgb GB is now below the configured threshold of $threshold GB.\n Rule $rulenumber has been disabled and everyone is using the fast link.\n%s"), $name, $report), true);
+                                                        
+	}
+}
+
+
+
+
+exit(0);

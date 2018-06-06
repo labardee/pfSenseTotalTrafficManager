@@ -1,0 +1,42 @@
+require_once("config.inc");
+require_once("functions.inc");
+require_once("filter.inc");
+require_once("shaper.inc");
+
+
+global $config, $argv, $option;
+
+$config = parse_config(true);
+$args = array_slice($argv, 3);
+$option = "$argv[3]";
+
+if ($option == 0){
+	echo("DEBUG*** Option is $option, ensuring pbr is enabled \n");
+	if (!isset($config['filter']['rule']['8']['disabled'])) {
+		echo("DEBUG*** Very well, Tmobile PBR is already enabled \n");
+		return 0;
+	} else {
+		unset($config['filter']['rule']['8']['disabled']);
+		echo("DEBUG*** TMobile PBR has now been enabled \n");
+		write_config("ISP_Switch enabled Tmobile PBR");
+		$config = parse_config(true);
+		filter_configure_sync();                                                           
+	}
+}
+
+if ($option == 1) {
+	echo("DEBUG*** Option is $option, ensuring pbr is disabled \n");
+	if (isset($config['filter']['rule']['8']['disabled'])) {
+		echo("DEBUG*** Very Well, TMobile PBR is already disabled \n");
+		return 0;
+	} else {
+		$config['filter']['rule']['8']['disabled'] = "";
+		write_config("ISP_Switch disabled Tmobile PBR");
+		$config = parse_config(true);
+		filter_configure_sync();
+		echo("DEBUG*** TMobile PBR is no longer enabled \n");
+                                                        
+	}
+}
+
+exit(0);

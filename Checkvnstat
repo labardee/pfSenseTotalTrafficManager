@@ -1,0 +1,16 @@
+require_once("config.inc");
+require_once("functions.inc");
+
+$em0data = shell_exec('vnstat -m -i em0 -s --xml');
+
+$xml=simplexml_load_string($em0data) or die("Error: Cannot create object");
+$rxbytes = $xml->interface[0]->traffic[0]->total[0]->rx;
+$txbytes = $xml->interface[0]->traffic[0]->total[0]->tx;
+$rxgb = round(($rxbytes / 1048576), 2);
+$txgb = round(($txbytes / 1048576), 2);
+$totalgb = ($txgb + $rxgb);
+
+echo("DEBUG*** EM0 Total This Month Received-Downstream: $rxgb GB \n");
+echo("DEBUG*** EM0 Total This Month Sent-Upstream: $txgb GB \n");
+echo("DEBUG*** EM0 Total This Month: $totalgb GB \n");	
+
